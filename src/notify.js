@@ -29,34 +29,47 @@ function newSignal(sig) {
   const s = sig.setup;
   const coin = sig.symbol.replace('USDT', '');
   const title = `${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'} ${coin}/USDT · ${sig.confidence}%`;
+  const bt = sig.strategy && sig.strategy.bt;
   const body =
-    `Entry zone: ${fmt(s.entryLow)} - ${fmt(s.entryHigh)} (enter by ${pkt(sig.entryUntil)})\nStop-loss: ${fmt(s.stop)} (-${s.stopPct.toFixed(2)}%)\n` +
+    `Entry zone: ${fmt(s.entryLow)} - ${fmt(s.entryHigh)} (enter by ${pkt(sig.entryUntil)})\n` +
+    `Stop-loss: ${fmt(s.stop)} (-${s.stopPct.toFixed(2)}%)\n` +
     `TP1: ${fmt(s.tp1)}  ·  TP2: ${fmt(s.tp2)}\n` +
     `Leverage: ${s.leverage}x isolated · Margin ≈ $${s.margin.toFixed(2)} · Risk ≈ $${s.riskUsd.toFixed(2)}\n` +
-    `Close by: ${pkt(sig.closeBy)}`;
+    `Close by: ${pkt(sig.closeBy)}` +
+    (bt ? `\nStrategy: ${sig.strategy.name} · backtest ${bt.trades} trades, ${bt.winRate.toFixed(0)}% wins, ${bt.avgR >= 0 ? '+' : ''}${bt.avgR.toFixed(2)}R avg` : '');
   const a = { type: 'new', title, body, id: sig.id, symbol: sig.symbol };
   addUpdate(a);
   bus.emit('alert', a);
-  telegram(`<b>${title}</b>\n${body}\n\nSell half at TP1, then move stop to entry. Not financial advice.`);
+  telegram(`<b>${title}</b>\n${body}\n\nOpen the portal and press <b>I took it</b> or <b>Skip</b>. No reply = "Not taken" (still tracked).\nSell half at TP1, then move stop to entry. Not financial advice.`);
 }
 
 function update(sig, what) {
   const coin = sig.symbol.replace('USDT', '');
-  const map = {
+  const notTaken = sig.userAction === 'missed' || sig.userAction === 'skipped';
+  const pre = notTaken ? `(not taken) ` : '';
+  const map = notTaken ? {
+    tp1: `${pre}${coin} reached TP1`,
+    tp2: `${pre}${coin} would have hit TP2 ✓`,
+    stop: `${pre}${coin} would have hit stop-loss`,
+    breakeven: `${pre}${coin} TP1 then back to entry - would have been a small win`,
+    expired: `${pre}${coin} time ended`,
+  } : {
     tp1: `✅ ${coin} hit TP1 - take half profit, move stop to entry`,
     tp2: `🏆 ${coin} hit TP2 - trade closed in profit`,
     stop: `⛔ ${coin} hit stop-loss - trade closed`,
-    breakeven: `➖ ${coin} returned to entry after TP1 - closed at breakeven on 2nd half`,
-    expired: `⌛ ${coin} setup expired after ${config.signalExpiryHours}h - close manually if still open`,
+    breakeven: `➖ ${coin} back to entry after TP1 - 2nd half closed at entry`,
+    expired: `⌛ ${coin} reached close-by time - close it now if still open`,
   };
+  map.missed = `⏰ ${coin} marked "Not taken" - no response by the enter-by time. The agent keeps tracking it.`;
   const title = map[what] || `${coin} update`;
-  const body = sig.resultR !== undefined && sig.status === 'closed'
-    ? `Result: ${sig.resultR >= 0 ? '+' : ''}${sig.resultR.toFixed(2)}R (≈ ${sig.resultUsd >= 0 ? '+' : ''}$${sig.resultUsd.toFixed(2)})`
+  const body = sig.status === 'closed' && sig.resultR !== undefined
+    ? `${notTaken ? 'Would have been' : 'Result'}: ${sig.resultR >= 0 ? '+' : ''}${sig.resultR.toFixed(2)}R (≈ ${sig.resultUsd >= 0 ? '+' : '-'}$${Math.abs(sig.resultUsd).toFixed(2)})`
     : `Price: ${fmt(sig.lastPrice)}`;
   const a = { type: what, title, body, id: sig.id, symbol: sig.symbol };
   addUpdate(a);
   bus.emit('alert', a);
-  telegram(`<b>${title}</b>\n${body}`);
+  // Keep Telegram quiet for trades you didn't take, except the final result
+  if (!notTaken || sig.status === 'closed' || what === 'missed') telegram(`<b>${title}</b>\n${body}`);
 }
 
 module.exports = { newSignal, update, telegram };

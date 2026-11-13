@@ -30,7 +30,8 @@ app.get('/api/state', (_req, res) => res.json(store.snapshot()));
 
 app.post('/api/scan', async (_req, res) => { engine.scan(); res.json({ ok: true }); });
 
-app.post('/api/signals/:id/close', (req, res) => res.json({ ok: engine.closeManually(req.params.id) }));
+// Your response to a signal: take | skip | close
+app.post('/api/signals/:id/:action', (req, res) => res.json(engine.respond(req.params.id, req.params.action)));
 
 app.post('/api/test-alert', async (_req, res) => {
   store.bus.emit('alert', { type: 'test', title: '🔔 Test alert', body: 'Alerts are working.' });

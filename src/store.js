@@ -36,19 +36,30 @@ function addUpdate(u) {
   state.updates = state.updates.slice(0, 200);
 }
 
-function stats() {
-  const closed = state.signals.filter(s => s.status === 'closed');
-  const wins = closed.filter(s => s.resultR > 0.05).length;
-  const totalR = closed.reduce((a, s) => a + (s.resultR || 0), 0);
-  const totalUsd = closed.reduce((a, s) => a + (s.resultUsd || 0), 0);
-  const dayAgo = Date.now() - 864e5;
+function summarize(list, rKey = 'resultR', usdKey = 'resultUsd', pick = x => x) {
+  const rows = list.map(pick);
+  const wins = rows.filter(r => r[rKey] > 0.05).length;
   return {
-    active: state.signals.filter(s => s.status !== 'closed').length,
-    closed: closed.length,
-    wins,
-    winRate: closed.length ? (wins / closed.length) * 100 : null,
-    totalR, totalUsd,
-    today: state.signals.filter(s => s.createdAt > dayAgo).length,
+    count: rows.length, wins,
+    winRate: rows.length ? (wins / rows.length) * 100 : null,
+    totalR: rows.reduce((a, r) => a + (r[rKey] || 0), 0),
+    totalUsd: rows.reduce((a, r) => a + (r[usdKey] || 0), 0),
+    avgR: rows.length ? rows.reduce((a, r) => a + (r[rKey] || 0), 0) / rows.length : 0,
+  };
+}
+
+function stats() {
+  const S = state.signals;
+  const closed = S.filter(s => s.status === 'closed');
+  const notTaken = s => s.userAction === 'missed' || s.userAction === 'skipped';
+  return {
+    agent: summarize(closed),                                                     // every signal, taken or not
+    mine: summarize(S.filter(s => s.userAction === 'taken' && s.user), 'resultR', 'resultUsd', s => s.user),
+    missed: summarize(closed.filter(notTaken)),                                   // what you left on the table
+    awaiting: S.filter(s => !s.userAction && s.status !== 'closed').length,
+    openMine: S.filter(s => s.userAction === 'taken' && !s.user).length,
+    tracking: S.filter(s => notTaken(s) && s.status !== 'closed').length,
+    today: S.filter(s => s.createdAt > Date.now() - 864e5).length,
   };
 }
 

@@ -1,20 +1,25 @@
-// The agent loop: scan market -> analyze -> create/track signals -> notify.
+// The agent loop: scan market -> analyze + backtest -> signal -> track -> notify.
+//
+// Signal life-cycle
+//   new        -> waiting for you: "I took it" or "Skip" (until the enter-by time)
+//   taken      -> your trade; tracked until target / stop / close-by time
+//   skipped    -> you said no; still tracked so the agent's accuracy stays honest
+//   missed     -> no response by enter-by time = "Not taken"; still tracked to the end
+// Every signal is followed to its real outcome, so the agent's accuracy counts ALL signals.
 const config = require('./config');
 const md = require('./marketData');
-const { analyze, buildPlan } = require('./strategy');
-const { atr, last } = require('./indicators');
+const { analyze, buildPlan, planDistance, computeInd, trendAt } = require('./strategy');
 const store = require('./store');
 const notify = require('./notify');
 
 const { state, bus } = store;
-let cheapRefreshedAt = 0;
-let timer = null;
+let discoveredAt = 0;
 
 async function pool(items, size, fn) {
   const out = [];
   let i = 0;
   const workers = Array.from({ length: Math.min(size, items.length) }, async () => {
-    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]).catch(e => ({ error: e })); }
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]).catch(e => ({ error: e, sym: items[idx] })); }
   });
   await Promise.all(workers);
   return out;
@@ -26,6 +31,8 @@ function logError(msg) {
   state.meta.errors = state.meta.errors.slice(0, 10);
 }
 
+const openTakenCount = () => state.signals.filter(s => s.userAction === 'taken' && !s.user && s.status !== 'closed').length;
+
 function closeSignal(sig, outcome, R, price) {
   sig.status = 'closed';
   sig.outcome = outcome;
@@ -33,6 +40,8 @@ function closeSignal(sig, outcome, R, price) {
   sig.resultUsd = R * sig.setup.riskUsd;
   sig.closedAt = Date.now();
   sig.lastPrice = price;
+  // If you took it and didn't close it yourself, your result = the agent's result
+  if (sig.userAction === 'taken' && !sig.user) sig.user = { closedAt: sig.closedAt, resultR: R, resultUsd: sig.resultUsd, auto: true };
   notify.update(sig, outcome);
 }
 
@@ -41,75 +50,97 @@ function trackSignal(sig, k15) {
   const s = sig.setup;
   const dir = sig.side === 'LONG' ? 1 : -1;
   const now = Date.now();
-  const hit = (level, c) => dir === 1 ? c.high >= level : c.low <= level;     // favourable level reached
-  const hitAdverse = (level, c) => dir === 1 ? c.low <= level : c.high >= level; // adverse level reached
+  if (sig.status !== 'closed') {
+    const hit = (level, c) => (dir === 1 ? c.high >= level : c.low <= level);
+    const hitAdverse = (level, c) => (dir === 1 ? c.low <= level : c.high >= level);
+    const candles = k15.filter(c => c.openTime >= sig.createdAt && c.closeTime > (sig.checkedUntil || 0) && c.closeTime < now);
+    const livePrice = k15[k15.length - 1].close;
+    candles.push({ high: livePrice, low: livePrice, closeTime: 0, live: true });
 
-  const candles = k15.filter(c => c.openTime >= sig.createdAt && c.closeTime > (sig.checkedUntil || 0));
-  const livePrice = k15[k15.length - 1].close;
-  candles.push({ high: livePrice, low: livePrice, closeTime: 0, live: true });
-
-  for (const c of candles) {
-    if (sig.status === 'closed') break;
-    if (sig.status === 'active') {
-      if (hitAdverse(s.stop, c)) { closeSignal(sig, 'stop', -1, s.stop); break; }
-      if (hit(s.tp1, c)) {
-        sig.status = 'tp1';
-        sig.stopNow = s.entry;
-        sig.lastPrice = s.tp1;
-        notify.update(sig, 'tp1');
+    for (const c of candles) {
+      if (sig.status === 'closed') break;
+      if (sig.status === 'active') {
+        if (hitAdverse(s.stop, c)) { closeSignal(sig, 'stop', -1, s.stop); break; }
+        if (hit(s.tp1, c)) {
+          sig.status = 'tp1';
+          sig.lastPrice = s.tp1;
+          notify.update(sig, 'tp1');
+          if (hit(s.tp2, c)) { closeSignal(sig, 'tp2', 2, s.tp2); break; }
+        }
+      } else if (sig.status === 'tp1') {
+        if (hitAdverse(s.entry, c)) { closeSignal(sig, 'breakeven', 0.75, s.entry); break; }
         if (hit(s.tp2, c)) { closeSignal(sig, 'tp2', 2, s.tp2); break; }
       }
-    } else if (sig.status === 'tp1') {
-      if (hitAdverse(s.entry, c)) { closeSignal(sig, 'breakeven', 0.75, s.entry); break; }
-      if (hit(s.tp2, c)) { closeSignal(sig, 'tp2', 2, s.tp2); break; }
+      if (!c.live) sig.checkedUntil = c.closeTime;
     }
-    if (!c.live && c.closeTime < now) sig.checkedUntil = c.closeTime;
+    if (sig.status !== 'closed') {
+      sig.lastPrice = livePrice;
+      const mtmR = (dir * (livePrice - s.entry)) / s.dist;
+      sig.liveR = sig.status === 'tp1' ? 0.75 + 0.5 * mtmR : mtmR;
+      if (now > sig.closeBy) closeSignal(sig, 'expired', sig.liveR, livePrice);
+    }
   }
-
-  if (sig.status !== 'closed') {
-    sig.lastPrice = livePrice;
-    const mtmR = (dir * (livePrice - s.entry)) / s.dist;
-    sig.liveR = sig.status === 'tp1' ? 0.75 + 0.5 * mtmR : mtmR;
-    if (now > (sig.closeBy || sig.createdAt + config.signalExpiryHours * 36e5)) {
-      closeSignal(sig, 'expired', sig.liveR, livePrice);
-    }
+  // No response by the enter-by time -> "Not taken" (still tracked)
+  if (!sig.userAction && now > sig.entryUntil) {
+    sig.userAction = 'missed';
+    if (sig.status !== 'closed') notify.update(sig, 'missed');
   }
 }
 
 function canOpen(symbol) {
-  const open = state.signals.find(s => s.symbol === symbol && s.status !== 'closed');
-  if (open) return false;
+  if (state.signals.find(s => s.symbol === symbol && s.status !== 'closed')) return false;
   const lastOne = state.signals.find(s => s.symbol === symbol);
-  if (lastOne && Date.now() - lastOne.createdAt < config.cooldownHours * 36e5) return false;
-  return true;
+  return !(lastOne && Date.now() - lastOne.createdAt < config.cooldownHours * 36e5);
 }
 
-function openSignal(sym, side, confidence, reasons, setup, price, extra = {}) {
-  const now = Date.now();
+function openSignal(a, extra = {}) {
+  const now = extra.createdAt || Date.now();
   const sig = {
-    id: `${sym}-${now}`,
-    symbol: sym, side, confidence, reasons, setup,
+    id: `${a.symbol}-${now}`,
+    symbol: a.symbol, side: a.setup.side, confidence: a.confidence,
+    reasons: a.reasons, checks: a.checks, strategy: a.pick, setup: a.setup,
     createdAt: now,
     entryUntil: now + config.entryWindowHours * 36e5,
     closeBy: now + config.signalExpiryHours * 36e5,
-    status: 'active', lastPrice: price, liveR: 0, ...extra,
+    status: 'active', userAction: null, user: null,
+    lastPrice: a.price, liveR: 0, ...extra,
   };
   state.signals.unshift(sig);
-  notify.newSignal(sig);
+  state.signals.sort((x, y) => y.createdAt - x.createdAt);
+  if (!extra.silent) notify.newSignal(sig);
   return sig;
 }
 
-// DEMO mode only: make sure the portal shows a couple of sample trades.
+function btcContext(k1h) {
+  const d = computeInd(k1h);
+  const n = k1h.length;
+  return {
+    trend: trendAt(d, n - 2),
+    change4h: ((k1h[n - 1].close - k1h[n - 5].close) / k1h[n - 5].close) * 100,
+    rsi: d.rsi[n - 1] || 50,
+  };
+}
+
+// DEMO mode only: sample signals (some back-dated) so every part of the portal can be seen.
 function seedDemo(results) {
-  if (state.signals.some(s => s.status !== 'closed')) return;
-  const picks = Object.values(state.market).filter(a => a.trend !== 'NEUTRAL').slice(0, 3);
-  for (const a of picks) {
-    const r = results.find(x => x && x.sym === a.symbol);
-    if (!r || !canOpen(a.symbol)) continue;
-    const dir = a.trend === 'UP' ? 1 : -1;
-    const plan = buildPlan(a.price, dir, r.k1h, last(atr(r.k1h, 14)));
-    openSignal(a.symbol, plan.side, 72, ['DEMO sample trade (not a real signal)', ...a.reasons], plan, a.price, { demo: true });
-  }
+  if (state.signals.length) return;
+  const rs = results.filter(r => r && !r.error);
+  const make = (r, hoursAgo, extra) => {
+    const k = r.k1h, i = k.length - 2 - hoursAgo;
+    const a = state.market[r.sym];
+    const dir = a.trend === 'DOWN' ? -1 : 1;
+    const entry = k[i].close;
+    const setup = buildPlan(entry, dir, planDistance(k, i, dir, entry, (a.atrDemo = Math.abs(k[i].high - k[i].low) || entry * 0.01)));
+    const strat = a.strategies[0];
+    openSignal({
+      symbol: r.sym, price: entry, confidence: 70, setup,
+      reasons: ['DEMO sample trade (not a real signal)', `${strat.name}: backtest ${strat.bt.trades} trades, ${strat.bt.winRate.toFixed(0)}% wins`],
+      checks: [{ ok: true, name: 'Backtest win rate', detail: `${strat.bt.winRate.toFixed(0)}%` }, { ok: true, name: 'Bitcoin direction', detail: 'ok' }, { ok: true, name: 'Liquidity', detail: 'ok' }],
+      pick: { id: strat.id, name: strat.name, about: 'demo', bt: strat.bt },
+    }, { demo: true, silent: hoursAgo > 0, createdAt: k[i + 1].openTime, ...extra });
+  };
+  rs.slice(0, 3).forEach(r => make(r, 0));
+  rs.slice(3, 9).forEach((r, j) => make(r, 4 + j * 2, j === 0 ? { userAction: 'taken', takenAt: Date.now() } : {}));
 }
 
 async function scan() {
@@ -117,46 +148,52 @@ async function scan() {
   state.meta.scanning = true;
   bus.emit('update');
   try {
-    // Refresh hot + cheap coin lists every 15 minutes
-    if ((config.scanCheap || config.scanHot) && Date.now() - cheapRefreshedAt > 15 * 6e4) {
+    if ((config.scanCheap || config.scanHot) && Date.now() - discoveredAt > 15 * 6e4) {
       try {
         const { cheap, hot } = await md.discoverCoins();
         state.meta.cheapCoins = cheap;
         state.meta.hotCoins = hot;
-        cheapRefreshedAt = Date.now();
+        discoveredAt = Date.now();
       } catch (e) { logError('Coin discovery failed: ' + e.message); }
     }
-    const activeSymbols = state.signals.filter(s => s.status !== 'closed').map(s => s.symbol);
-    const symbols = [...new Set([...config.watchlist, ...state.meta.hotCoins, ...state.meta.cheapCoins, ...activeSymbols])];
+    const tracked = state.signals.filter(s => s.status !== 'closed').map(s => s.symbol);
+    const symbols = [...new Set(['BTCUSDT', ...config.watchlist, ...state.meta.hotCoins, ...state.meta.cheapCoins, ...tracked])];
 
     let tickers = {};
     try { tickers = await md.tickers24h(symbols); } catch (e) { logError('24h ticker failed: ' + e.message); }
 
     const results = await pool(symbols, 4, async sym => {
-      const [k15, k1h, k4h] = await Promise.all([md.klines(sym, '15m', 120), md.klines(sym, '1h', 200), md.klines(sym, '4h', 200)]);
-      return { sym, k15, k1h, k4h };
+      const [k15, k1h] = await Promise.all([md.klines(sym, '15m', 120), md.klines(sym, '1h', 1000)]);
+      return { sym, k15, k1h };
     });
+
+    const btcRes = results.find(r => r && r.sym === 'BTCUSDT' && !r.error);
+    const ctx = { btc: btcRes ? btcContext(btcRes.k1h) : null };
+    state.meta.btc = ctx.btc;
 
     const fresh = {};
     for (const r of results) {
-      if (!r || r.error) { logError(`Data failed: ${r && r.error ? r.error.message : 'unknown'}`); continue; }
-      const { sym, k15, k1h, k4h } = r;
+      if (!r || r.error) { logError(`Data failed for ${r && r.sym}: ${r && r.error ? r.error.message : 'unknown'}`); continue; }
+      const { sym, k15, k1h } = r;
       try {
-        // track existing signals first
         for (const sig of state.signals.filter(s => s.symbol === sym && s.status !== 'closed')) trackSignal(sig, k15);
-
-        const a = analyze(sym, k15, k1h, k4h, tickers[sym]);
+        if (k1h.length < 260) continue; // too new to benchmark
+        ctx.openTaken = openTakenCount();
+        const a = analyze(sym, k15, k1h, tickers[sym], ctx);
         a.cheap = state.meta.cheapCoins.includes(sym);
         a.hot = state.meta.hotCoins.includes(sym);
         fresh[sym] = a;
-
-        if (a.setup && a.confidence >= config.minConfidence && canOpen(sym)) {
-          openSignal(sym, a.verdict, a.confidence, a.reasons, a.setup, a.price);
-        }
+        if (a.setup && canOpen(sym)) openSignal(a);
       } catch (e) { logError(`Analyze ${sym} failed: ${e.message}`); }
     }
+    // response deadlines for signals whose coin dropped out of the scan
+    for (const sig of state.signals) if (!sig.userAction && Date.now() > sig.entryUntil) { sig.userAction = 'missed'; }
+
     state.market = fresh;
-    if (config.demo) seedDemo(results);
+    if (config.demo && !state.signals.length) {
+      seedDemo(results);
+      for (const r of results) if (r && !r.error) for (const sig of state.signals.filter(s => s.symbol === r.sym && s.status !== 'closed')) trackSignal(sig, r.k15);
+    }
     state.meta.lastScan = Date.now();
     store.save();
   } catch (e) {
@@ -168,19 +205,49 @@ async function scan() {
   }
 }
 
+// Between full scans, re-check open trades every minute so targets/stops are caught fast.
+async function quickTrack() {
+  if (state.meta.scanning) return;
+  const open = state.signals.filter(s => s.status !== 'closed');
+  if (!open.length) return;
+  for (const sym of [...new Set(open.map(s => s.symbol))]) {
+    try {
+      const k15 = await md.klines(sym, '15m', 120);
+      for (const sig of open.filter(s => s.symbol === sym)) trackSignal(sig, k15);
+    } catch (_) { /* next scan will retry */ }
+  }
+  store.save();
+  bus.emit('update');
+}
+
 function start() {
   store.load();
   scan();
-  timer = setInterval(scan, config.scanIntervalMin * 6e4);
+  setInterval(scan, config.scanIntervalMin * 6e4);
+  setInterval(quickTrack, 60e3);
 }
 
-function closeManually(id) {
-  const sig = state.signals.find(s => s.id === id && s.status !== 'closed');
-  if (!sig) return false;
-  closeSignal(sig, 'manual', sig.liveR || 0, sig.lastPrice);
+// ---------- Your responses ----------
+function respond(id, action) {
+  const sig = state.signals.find(s => s.id === id);
+  if (!sig) return { ok: false, error: 'not found' };
+  if (action === 'take') {
+    if (sig.status === 'closed') return { ok: false, error: 'trade already finished' };
+    sig.userAction = 'taken';
+    sig.takenAt = Date.now();
+    sig.takenPrice = sig.lastPrice;
+  } else if (action === 'skip') {
+    if (sig.userAction === 'taken') return { ok: false, error: 'already taken' };
+    sig.userAction = 'skipped';
+  } else if (action === 'close') {
+    // You closed your position yourself; the agent keeps tracking for its accuracy score.
+    if (sig.userAction !== 'taken' || sig.user) return { ok: false, error: 'not an open trade of yours' };
+    const R = sig.status === 'closed' ? sig.resultR : (sig.liveR || 0);
+    sig.user = { closedAt: Date.now(), resultR: R, resultUsd: R * sig.setup.riskUsd, price: sig.lastPrice };
+  } else return { ok: false, error: 'unknown action' };
   store.save();
   bus.emit('update');
-  return true;
+  return { ok: true };
 }
 
-module.exports = { start, scan, closeManually };
+module.exports = { start, scan, respond };

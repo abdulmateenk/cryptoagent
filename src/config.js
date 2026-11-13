@@ -48,6 +48,17 @@ const config = {
   maxStopPct: num('MAX_STOP_PCT', 4),             // skip setups needing a wider stop
   allowShorts: bool('ALLOW_SHORTS', true),
   minConfidence: num('MIN_CONFIDENCE', 60),
+
+  // Pre-trade benchmark: each setup is backtested on the coin's last ~1000 1h candles
+  btMinTrades: num('BT_MIN_TRADES', 6),          // need at least this many past examples
+  btMinWinRate: num('BT_MIN_WIN_RATE', 45),      // % of past trades that ended in profit
+  btMinAvgR: num('BT_MIN_AVG_R', 0.15),          // average result per trade (in R)
+  btMinProfitFactor: num('BT_MIN_PROFIT_FACTOR', 1.2),
+
+  // Risk limits
+  maxOpenTrades: num('MAX_OPEN_TRADES', 3),       // trades you have taken and not closed
+  minVolumeUsd: num('MIN_VOLUME_USD', 5_000_000), // skip illiquid coins
+  btcGuard: bool('BTC_GUARD', true),              // block alt longs when BTC is dumping (and shorts when pumping)
   signalExpiryHours: num('SIGNAL_EXPIRY_HOURS', 12),  // close-by time for short-term trades
   cooldownHours: num('COOLDOWN_HOURS', 4),
 

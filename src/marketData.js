@@ -56,7 +56,7 @@ function demoKlines(symbol, interval, limit) {
     const drift = (rnd() - 0.5) * vol * 0.6;
     let price = base * (1 - drift * 150);
     const candles = [];
-    for (let i = 300; i > 0; i--) {
+    for (let i = 1100; i > 0; i--) {
       const open = price;
       const wave = Math.sin(i / 9) * vol * 0.6;
       const close = open * (1 + drift + wave * 0.3 + (rnd() - 0.5) * vol * 2);
@@ -78,8 +78,25 @@ function demoKlines(symbol, interval, limit) {
 }
 
 // ---------- Public API ----------
+// DEMO: build 15m candles from the 1h series so both timeframes agree.
+function demo15m(symbol, limit) {
+  const h = demoKlines(symbol, '1h', Math.ceil(limit / 4) + 1);
+  const out = [];
+  for (const c of h) {
+    for (let q = 0; q < 4; q++) {
+      const o = c.open + (c.close - c.open) * (q / 4), cl = c.open + (c.close - c.open) * ((q + 1) / 4);
+      const wig = (c.high - c.low) * 0.25;
+      out.push({ openTime: c.openTime + q * 9e5, closeTime: c.openTime + (q + 1) * 9e5 - 1, open: o, close: cl,
+        high: Math.min(c.high, Math.max(o, cl) + wig), low: Math.max(c.low, Math.min(o, cl) - wig), volume: c.volume / 4, quoteVolume: c.quoteVolume / 4 });
+    }
+  }
+  const lastC = out[out.length - 1];
+  lastC.close = h[h.length - 1].close;
+  return out.filter(c => c.openTime <= Date.now()).slice(-limit);
+}
+
 async function klines(symbol, interval, limit = 200) {
-  if (config.demo) return demoKlines(symbol, interval, limit);
+  if (config.demo) return interval === '15m' ? demo15m(symbol, limit) : demoKlines(symbol, interval, limit);
   return parseKlines(await getJson(`/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`));
 }
 

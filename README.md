@@ -3,7 +3,14 @@
 Your own market-watch agent with a browser portal. It runs 24/7 on a server and:
 
 - scans major coins, **hot coins** (today's biggest movers) and **cheap high-volume coins** every 5 minutes
-- uses EMA trend, RSI, ATR, **OBV** and volume to find short-term **LONG** and **SHORT** setups
+- runs **4 strategies** on every coin: Trend pullback, Volume breakout, Range bounce, MACD momentum
+- **benchmarks before every signal**: backtests the strategy on that coin's last ~40 days with the exact same
+  stop/targets, then runs risk checks (backtest win rate, avg result, profit factor, strategies agree,
+  Bitcoin direction, liquidity, volatility, not chasing, RSI, price still near entry, max open trades).
+  A signal is sent **only if everything passes**
+- every signal asks you **I took it / Skip**. No answer by the enter-by time = **Not taken**, but the agent
+  keeps tracking it to the end, so you see **Agent accuracy** (all signals), **Your results** (trades you took)
+  and **Missed wins** (good trades you didn't take)
 - shows each trade in the **New Trades** sidebar with: buy zone (from price → to price), stop-loss, 2 targets, leverage, margin, max loss, **enter-by time** and **close-by time**
 - tracks every trade live and posts to the **Updates** tab when a target or stop is hit
 - shows **TradingView charts** (EMA, RSI, OBV) for any coin you click
@@ -61,7 +68,20 @@ docker run -d --restart=always -p 80:3000 --env-file .env -v $(pwd)/data:/app/da
 > Choose a server region outside the USA (e.g. Singapore/Europe). Prices come from
 > `data-api.binance.vision` (Binance's public data), which works from most regions.
 
-## 3. Turn on alerts
+## 3. Keep it running when your browser / PC is closed
+
+The agent runs **on the server**, not in your browser. The portal is just a window into it.
+Close the browser, turn off your PC - the server keeps scanning, tracking and sending Telegram alerts.
+You only need the server process to stay up:
+
+- **pm2** (plain server): `npm i -g pm2 && pm2 start server.js --name cryptoagent && pm2 save && pm2 startup`
+  (restarts automatically after crashes and reboots)
+- **Docker**: `--restart=always` (already in the command above)
+- **Railway / Render (paid plan)**: always on by default
+
+Do NOT run it on your own laptop if you want 24/7 - when the laptop sleeps, the agent sleeps.
+
+## 4. Turn on alerts
 
 - **Browser:** open the portal → click **🔔 Enable alerts** → Allow. Works while the portal tab is open.
 - **Telegram (recommended, works even when the portal is closed):**
@@ -70,7 +90,7 @@ docker run -d --restart=always -p 80:3000 --env-file .env -v $(pwd)/data:/app/da
      `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `"chat":{"id": ...}` → `TELEGRAM_CHAT_ID`.
   3. Restart the app and press **Test alert** in the portal.
 
-## 4. How to use a trade card
+## 5. How to use a trade card
 
 | Field | Meaning |
 |---|---|
@@ -81,18 +101,21 @@ docker run -d --restart=always -p 80:3000 --env-file .env -v $(pwd)/data:/app/da
 | Target 2 | Close the rest |
 | Close by | If neither target nor stop is hit by now, close the trade |
 | Leverage / margin | Use **isolated** margin with this leverage and margin |
+| Pre-trade analysis | The strategy's backtest on this coin + every risk check |
+| I took it / Skip | Tell the agent what you did. No reply by enter-by = "Not taken" (still tracked) |
+| I closed it | You closed early; your result is saved, the agent keeps tracking for accuracy |
 
 LONG = buy (spot or futures). SHORT needs futures/margin; skip shorts if your app is spot-only
 (or set `ALLOW_SHORTS=false`).
 
-## 5. Your apps
+## 6. Your apps
 
 - **Binance:** signals use Binance prices, so they match directly.
 - **Fasset / other apps:** prices can differ slightly; check the zone on your app before entering, and only trade coins your app lists.
 - **KTrade** is a stock broker, so these crypto signals don't apply there.
 - **IQ Option** is an offshore CFD/options platform, not a PVARA-licensed crypto exchange. Be very careful there.
 
-## 6. Settings
+## 7. Settings
 
 All settings are in `.env.example`: account size, risk per trade, max leverage, coins,
 scan speed, entry window and close-by time.

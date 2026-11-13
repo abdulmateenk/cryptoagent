@@ -61,6 +61,56 @@ function obv(candles) {
   return out;
 }
 
+function sma(values, period) {
+  const out = new Array(values.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+
+// Bollinger Bands (period, k std devs)
+function bollinger(values, period = 20, k = 2) {
+  const mid = sma(values, period);
+  const upper = new Array(values.length).fill(null), lower = new Array(values.length).fill(null);
+  for (let i = period - 1; i < values.length; i++) {
+    let v = 0;
+    for (let j = i - period + 1; j <= i; j++) v += (values[j] - mid[i]) ** 2;
+    const sd = Math.sqrt(v / period);
+    upper[i] = mid[i] + k * sd;
+    lower[i] = mid[i] - k * sd;
+  }
+  return { mid, upper, lower };
+}
+
+// MACD (12, 26, 9)
+function macd(values, f = 12, s = 26, sig = 9) {
+  const ef = ema(values, f), es = ema(values, s);
+  const line = values.map((_, i) => (ef[i] !== null && es[i] !== null ? ef[i] - es[i] : null));
+  const start = line.findIndex(v => v !== null);
+  const sigArr = new Array(values.length).fill(null);
+  if (start >= 0) {
+    const tail = ema(line.slice(start), sig);
+    tail.forEach((v, j) => { sigArr[start + j] = v; });
+  }
+  const hist = line.map((v, i) => (v !== null && sigArr[i] !== null ? v - sigArr[i] : null));
+  return { line, signal: sigArr, hist };
+}
+
+// Highest high / lowest low of the previous `period` candles (excluding current)
+function donchian(candles, period = 20) {
+  const hi = new Array(candles.length).fill(null), lo = new Array(candles.length).fill(null);
+  for (let i = period; i < candles.length; i++) {
+    let h = -Infinity, l = Infinity;
+    for (let j = i - period; j < i; j++) { h = Math.max(h, candles[j].high); l = Math.min(l, candles[j].low); }
+    hi[i] = h; lo[i] = l;
+  }
+  return { hi, lo };
+}
+
 const last = arr => arr[arr.length - 1];
 
-module.exports = { ema, rsi, atr, obv, last };
+module.exports = { ema, sma, rsi, atr, obv, bollinger, macd, donchian, last };

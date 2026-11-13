@@ -70,6 +70,24 @@
   details ul { margin: 6px 0 0; padding-left: 16px; }
   summary { cursor: pointer; }
 
+  .sec { font-size: 11.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 6px 2px 0; display: flex; align-items: center; }
+  .empty.small { padding: 10px; font-size: 12px; text-align: left; }
+  .card.waiting { border-color: rgba(59,130,246,.45); }
+  .strat { font-size: 12px; color: var(--muted); margin: -2px 0 8px; }
+  .hint { font-size: 11px; color: var(--dim); margin-top: 8px; }
+  .trow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; cursor: pointer; }
+  .pre summary { color: var(--text); font-size: 12.5px; }
+  .bt { display: grid; grid-template-columns: repeat(4, 1fr) 1.3fr; gap: 6px; align-items: end; background: var(--bg); border-radius: 8px; padding: 8px; }
+  .bt div { display: flex; flex-direction: column; } .bt b { color: var(--text); font-size: 13px; } .bt span { font-size: 10.5px; }
+  .bt .bars { flex-direction: row; align-items: flex-end; gap: 2px; height: 30px; }
+  .bar { flex: 1; background: var(--line); border-radius: 2px; min-height: 3px; } .bar.w { background: var(--green); } .bar.l { background: var(--red); }
+  .checks { list-style: none; padding: 0; margin: 8px 0 0; }
+  .checks li { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; border-bottom: 1px dotted var(--line); }
+  .checks li.ok span:first-child { color: var(--green); } .checks li.bad span:first-child { color: var(--red); }
+  .checks li span:last-child { text-align: right; }
+  .why { margin: 8px 0 0; padding-left: 16px; }
+  table.mini { margin-top: 6px; font-size: 12px; } table.mini th, table.mini td { padding: 4px 10px; }
+
   /* Update item */
   .upd { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; }
   .upd.unread { border-left: 3px solid var(--blue); }
@@ -147,11 +165,11 @@
     <div class="banner" id="demoBanner" hidden>DEMO MODE - prices are simulated and trades are samples. Deploy without <b>DEMO=true</b> to use live Binance data.</div>
 
     <div class="stats">
-      <div class="stat"><div class="l">Open trades</div><div class="v num" id="sActive">0</div><div class="s">tracked live</div></div>
-      <div class="stat"><div class="l">Win rate</div><div class="v num" id="sWin">-</div><div class="s" id="sClosed">0 closed</div></div>
-      <div class="stat"><div class="l">Total result</div><div class="v num" id="sUsd">$0.00</div><div class="s" id="sR">0.00R</div></div>
-      <div class="stat"><div class="l">Signals (24h)</div><div class="v num" id="sToday">0</div><div class="s">new setups</div></div>
-      <div class="stat"><div class="l">Risk settings</div><div class="v num" id="sRisk">-</div><div class="s" id="sRisk2">-</div></div>
+      <div class="stat"><div class="l">Agent accuracy</div><div class="v num" id="sAgent">-</div><div class="s" id="sAgent2">all signals, taken or not</div></div>
+      <div class="stat"><div class="l">Your results</div><div class="v num" id="sMine">$0.00</div><div class="s" id="sMine2">trades you took</div></div>
+      <div class="stat"><div class="l">Missed wins (not taken)</div><div class="v num" id="sMissed">0</div><div class="s" id="sMissed2">-</div></div>
+      <div class="stat"><div class="l">Waiting for you</div><div class="v num" id="sWait">0</div><div class="s" id="sWait2">-</div></div>
+      <div class="stat"><div class="l">Signals (24h)</div><div class="v num" id="sToday">0</div><div class="s" id="sRisk2">-</div></div>
     </div>
 
     <section class="panel">
@@ -183,7 +201,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Coin</th><th class="r">Price</th><th class="r">24h</th><th>4h trend</th><th class="r">RSI 1h</th><th>OBV</th><th class="r">Vol</th><th>Agent view</th></tr></thead>
+          <thead><tr><th>Coin</th><th class="r">Price</th><th class="r">24h</th><th>4h trend</th><th class="r">RSI 1h</th><th>OBV</th><th class="r">Vol</th><th>Best strategy (backtest)</th><th>Agent view</th></tr></thead>
           <tbody id="mktBody"></tbody>
         </table>
       </div>
@@ -193,7 +211,7 @@
       <div class="panel-head"><h2>Trade history</h2><span class="muted" id="histCount"></span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Coin</th><th>Side</th><th>Opened</th><th>Closed</th><th>Outcome</th><th class="r">Result</th></tr></thead>
+          <thead><tr><th>Coin</th><th>Side</th><th>Strategy</th><th>Signal</th><th>Ended</th><th>You</th><th>Outcome</th><th class="r">Agent result</th><th class="r">Your result</th></tr></thead>
           <tbody id="histBody"></tbody>
         </table>
       </div>
@@ -240,16 +258,25 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<':
 
 // ---------- Sidebar ----------
 function renderSidebar() {
-  const open = S.signals.filter(s => s.status !== 'closed');
-  $('#tradesCount').textContent = open.length;
+  const sig = S.signals;
+  const waiting = sig.filter(s => !s.userAction && s.status !== 'closed');
+  const mine = sig.filter(s => s.userAction === 'taken' && !s.user);
+  const tracking = sig.filter(s => (s.userAction === 'missed' || s.userAction === 'skipped') && s.status !== 'closed');
+  $('#tradesCount').textContent = waiting.length + mine.length;
+  $('#tradesCount').classList.toggle('hot', waiting.length > 0);
   const unread = S.updates.filter(u => u.at > seenUpdates).length;
   $('#updCount').textContent = unread;
   $('#updCount').classList.toggle('hot', unread > 0);
 
   const list = $('#list');
   if (tab === 'trades') {
-    if (!open.length) { list.innerHTML = `<div class="empty">No open setups right now.<br>The agent scans every ${S.settings.scanIntervalMin} min and will alert you when a good one appears.<br><br>"No trade" is often the best trade.</div>`; return; }
-    list.innerHTML = open.map(tradeCard).join('');
+    let html = '';
+    html += `<div class="sec">Waiting for your response <span class="badge">${waiting.length}</span></div>`;
+    html += waiting.length ? waiting.map(s => tradeCard(s, 'waiting')).join('') :
+      `<div class="empty small">No new setups. The agent scans every ${S.settings.scanIntervalMin} min and only signals when the strategy, its backtest and every risk check pass.</div>`;
+    if (mine.length) html += `<div class="sec">Your open trades <span class="badge">${mine.length}</span></div>` + mine.map(s => tradeCard(s, 'mine')).join('');
+    if (tracking.length) html += `<div class="sec">Agent tracking - not taken <span class="badge">${tracking.length}</span></div>` + tracking.map(trackRow).join('');
+    list.innerHTML = html;
   } else {
     if (!S.updates.length) { list.innerHTML = `<div class="empty">No updates yet.</div>`; return; }
     list.innerHTML = S.updates.map(u => `
@@ -263,18 +290,48 @@ function renderSidebar() {
   }
 }
 
-function tradeCard(s) {
+function trackRow(s) {
+  const r = s.liveR || 0;
+  return `<div class="trow" data-sym="${s.symbol}">
+    <span class="side ${s.side}">${s.side}</span> <b>${coin(s.symbol)}</b>
+    <span class="chip">${s.userAction === 'skipped' ? 'Skipped' : 'Not taken'}</span>${s.status === 'tp1' ? ' <span class="chip tp1">TP1 hit</span>' : ''}
+    <span class="num ${r >= 0 ? 'up' : 'down'}" style="margin-left:auto">${r >= 0 ? '+' : ''}${r.toFixed(2)}R</span>
+    <div class="muted" style="width:100%;font-size:11.5px">ends ${dt(s.closeBy)} · ${left(s.closeBy)}</div>
+  </div>`;
+}
+
+function btBlock(bt) {
+  if (!bt) return '';
+  const bars = (bt.recent || []).map(r => `<span class="bar ${r > 0 ? 'w' : r < 0 ? 'l' : ''}" style="height:${Math.min(100, 20 + Math.abs(r) * 35)}%" title="${r}R"></span>`).join('');
+  return `<div class="bt">
+    <div><b class="num">${bt.winRate.toFixed(0)}%</b><span>win rate</span></div>
+    <div><b class="num">${bt.avgR >= 0 ? '+' : ''}${bt.avgR.toFixed(2)}R</b><span>avg / trade</span></div>
+    <div><b class="num">${bt.trades}</b><span>past trades</span></div>
+    <div><b class="num">${bt.profitFactor.toFixed(2)}</b><span>profit factor</span></div>
+    <div class="bars" title="last ${bt.recent ? bt.recent.length : 0} backtest trades">${bars}</div>
+  </div>`;
+}
+
+function tradeCard(s, kind) {
   const p = s.setup, long = s.side === 'LONG';
   const r = s.liveR || 0, usd = r * p.riskUsd;
-  const status = s.status === 'tp1' ? '<span class="chip tp1">TP1 hit · stop at entry</span>' : '<span class="chip">Active</span>';
+  const checks = s.checks || [];
+  const passed = checks.filter(c => c.ok).length;
+  const st = s.strategy;
+  const status = s.status === 'tp1' ? '<span class="chip tp1">TP1 hit · stop at entry</span>' : (kind === 'mine' ? '<span class="chip">You took it</span>' : '');
+  const actions = kind === 'waiting'
+    ? `<button class="btn small primary" data-act="take" data-id="${s.id}">✓ I took it</button>
+       <button class="btn small" data-act="skip" data-id="${s.id}">Skip</button>`
+    : `<button class="btn small" data-act="close" data-id="${s.id}">I closed it</button>`;
   return `
-  <div class="card ${s.symbol === selected ? 'sel' : ''}" data-sym="${s.symbol}">
+  <div class="card ${s.symbol === selected ? 'sel' : ''} ${kind}" data-sym="${s.symbol}">
     <div class="card-head">
       <span class="side ${s.side}">${s.side}</span>
       <span class="coin">${coin(s.symbol)}/USDT</span>
       ${s.demo ? '<span class="chip demo">demo</span>' : ''}
       <span class="conf">${s.confidence}% conf.</span>
     </div>
+    ${st ? `<div class="strat">${esc(st.name)}</div>` : ''}
     <div class="zone">
       <div class="lbl">${long ? 'Buy zone' : 'Short / sell zone'}</div>
       <div class="val num">${fmt(p.entryLow)} → ${fmt(p.entryHigh)}</div>
@@ -294,13 +351,19 @@ function tradeCard(s) {
     </dl>
     <div class="live"><span class="muted">Now <span class="num">${fmt(s.lastPrice)}</span></span>
       <span class="num ${r >= 0 ? 'up' : 'down'}">${r >= 0 ? '+' : ''}${r.toFixed(2)}R · ${money(usd)}</span></div>
+    <details class="pre" ${kind === 'waiting' ? 'open' : ''}>
+      <summary>Pre-trade analysis · <span class="${passed === checks.length ? 'up' : 'down'}">${passed}/${checks.length} checks passed</span></summary>
+      ${st && st.bt ? `<div class="muted" style="margin:6px 0 4px">Backtest of <b style="color:var(--text)">${esc(st.name)}</b> on ${coin(s.symbol)} (same stop/targets${st.bt.days ? `, last ${st.bt.days} days` : ''}):</div>` + btBlock(st.bt) : ''}
+      <ul class="checks">${checks.map(c => `<li class="${c.ok ? 'ok' : 'bad'}"><span>${c.ok ? '✓' : '✗'} ${esc(c.name)}</span><span>${esc(c.detail)}</span></li>`).join('')}</ul>
+      <ul class="why">${(s.reasons || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+    </details>
     <div class="card-actions">${status}
       <span style="margin-left:auto"></span>
       <button class="btn small" data-act="chart" data-sym="${s.symbol}">Chart</button>
       <button class="btn small" data-act="copy" data-id="${s.id}">Copy</button>
-      <button class="btn small" data-act="close" data-id="${s.id}">Mark closed</button>
+      ${actions}
     </div>
-    <details><summary>Why this trade?</summary><ul>${s.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>
+    ${kind === 'waiting' ? `<div class="hint">No response by ${hm(s.entryUntil)} → marked "Not taken" (the agent still tracks the result).</div>` : ''}
   </div>`;
 }
 
@@ -308,14 +371,17 @@ function tradeCard(s) {
 function renderMain() {
   $('#demoBanner').hidden = !S.settings.demo;
   const st = S.stats;
-  $('#sActive').textContent = st.active;
-  $('#sWin').textContent = st.winRate === null ? '-' : st.winRate.toFixed(0) + '%';
-  $('#sClosed').textContent = `${st.closed} closed · ${st.wins} wins`;
-  $('#sUsd').textContent = money(st.totalUsd);
-  $('#sUsd').className = 'v num ' + (st.totalUsd >= 0 ? 'up' : 'down');
-  $('#sR').textContent = `${st.totalR >= 0 ? '+' : ''}${st.totalR.toFixed(2)}R`;
+  const ag = st.agent, mi = st.mine, ms = st.missed;
+  $('#sAgent').textContent = ag.winRate === null ? '-' : ag.winRate.toFixed(0) + '%';
+  $('#sAgent2').textContent = ag.count ? `${ag.wins}/${ag.count} signals won · ${ag.avgR >= 0 ? '+' : ''}${ag.avgR.toFixed(2)}R avg` : 'all signals, taken or not';
+  $('#sMine').textContent = money(mi.totalUsd);
+  $('#sMine').className = 'v num ' + (mi.totalUsd >= 0 ? 'up' : 'down');
+  $('#sMine2').textContent = mi.count ? `${mi.count} trades · ${mi.winRate.toFixed(0)}% won` : 'trades you took';
+  $('#sMissed').textContent = `${ms.wins}/${ms.count}`;
+  $('#sMissed2').textContent = ms.count ? `would have been ${money(ms.totalUsd)}` : 'not-taken trades that won';
+  $('#sWait').textContent = st.awaiting;
+  $('#sWait2').textContent = `${st.openMine} open by you · ${st.tracking} tracked`;
   $('#sToday').textContent = st.today;
-  $('#sRisk').textContent = `$${S.settings.accountUsd}`;
   $('#sRisk2').textContent = `risk $${S.settings.riskPerTradeUsd}/trade · max ${S.settings.maxLeverage}x`;
 
   const m = S.meta;
@@ -340,21 +406,27 @@ function renderMain() {
       <td class="r num">${a.rsi1h ? a.rsi1h.toFixed(0) : '-'}</td>
       <td class="${a.obvTrend === 'UP' ? 'up' : a.obvTrend === 'DOWN' ? 'down' : 'muted'}">${a.obvTrend === 'UP' ? 'Rising' : a.obvTrend === 'DOWN' ? 'Falling' : 'Flat'}</td>
       <td class="r num">${a.volRatio ? a.volRatio.toFixed(2) + 'x' : '-'}</td>
-      <td><span class="verdict v-${a.verdict}">${a.verdict}</span>${a.confidence ? ` <span class="muted">${a.confidence}%</span>` : ''}</td>
-    </tr>`).join('') || `<tr><td colspan="8" class="muted">No coins in this filter.</td></tr>`;
+      <td>${a.best && a.best.trades ? `${esc(a.best.name)} <span class="muted num">${a.best.winRate.toFixed(0)}% · ${a.best.avgR >= 0 ? '+' : ''}${a.best.avgR.toFixed(2)}R</span>` : '<span class="muted">-</span>'}</td>
+      <td><span class="verdict v-${a.verdict}">${a.verdict}</span>${a.candidate ? ` <span class="muted">${a.candidate.side.toLowerCase()} pending checks</span>` : a.confidence && a.setup ? ` <span class="muted">${a.confidence}%</span>` : ''}</td>
+    </tr>`).join('') || `<tr><td colspan="9" class="muted">No coins in this filter.</td></tr>`;
 
   // history
   const closed = S.signals.filter(s => s.status === 'closed');
   $('#histCount').textContent = `${closed.length} trades`;
-  const label = { tp2: 'Target 2 ✓', breakeven: 'TP1 then entry', stop: 'Stop-loss', expired: 'Time expired', manual: 'Closed manually' };
-  $('#histBody').innerHTML = closed.slice(0, 60).map(s => `
+  const label = { tp2: 'Target 2 ✓', breakeven: 'TP1 then entry', stop: 'Stop-loss', expired: 'Time ended' };
+  const you = { taken: '<span class="chip tp1">Taken</span>', missed: '<span class="chip">Not taken</span>', skipped: '<span class="chip">Skipped</span>' };
+  const rr = (R, usd) => `<span class="num ${R >= 0 ? 'up' : 'down'}">${R >= 0 ? '+' : ''}${R.toFixed(2)}R · ${money(usd)}</span>`;
+  $('#histBody').innerHTML = closed.slice(0, 80).map(s => `
     <tr class="click" data-sym="${s.symbol}">
       <td><b>${coin(s.symbol)}</b>${s.demo ? ' <span class="chip demo">demo</span>' : ''}</td>
       <td><span class="verdict v-${s.side}">${s.side}</span></td>
+      <td class="muted">${s.strategy ? esc(s.strategy.name) : '-'}</td>
       <td>${dt(s.createdAt)}</td><td>${dt(s.closedAt)}</td>
+      <td>${you[s.userAction] || '-'}</td>
       <td>${label[s.outcome] || s.outcome}</td>
-      <td class="r num ${s.resultR >= 0 ? 'up' : 'down'}">${s.resultR >= 0 ? '+' : ''}${s.resultR.toFixed(2)}R · ${money(s.resultUsd)}</td>
-    </tr>`).join('') || `<tr><td colspan="6" class="muted">No closed trades yet. Results appear here automatically.</td></tr>`;
+      <td class="r">${rr(s.resultR, s.resultUsd)}</td>
+      <td class="r">${s.userAction === 'taken' && s.user ? rr(s.user.resultR, s.user.resultUsd) : '<span class="muted">-</span>'}</td>
+    </tr>`).join('') || `<tr><td colspan="9" class="muted">No finished signals yet. Every signal is tracked to its result, even if you don't take it.</td></tr>`;
 
   renderCoinInfo();
 }
@@ -364,8 +436,15 @@ function renderCoinInfo() {
   $('#chartTitle').textContent = coin(selected) + '/USDT';
   if (!a) { $('#chartPrice').textContent = ''; $('#coinInfo').innerHTML = ''; return; }
   $('#chartPrice').innerHTML = `${fmt(a.price)} <span class="${a.changePct >= 0 ? 'up' : 'down'}">${pct(a.changePct)}</span>`;
-  $('#coinInfo').innerHTML = `<b style="color:var(--text)">Agent view: <span class="verdict v-${a.verdict}">${a.verdict}</span></b>` +
-    a.reasons.map(r => `<span>${esc(r)}</span>`).join('');
+  const strat = (a.strategies || []).map(s => `<tr><td>${esc(s.name)}${s.fired ? ` <span class="verdict v-${s.fired > 0 ? 'LONG' : 'SHORT'}">${s.fired > 0 ? 'LONG' : 'SHORT'} now</span>` : ''}</td>
+      <td class="r num">${s.bt.trades}</td><td class="r num">${s.bt.trades ? s.bt.winRate.toFixed(0) + '%' : '-'}</td>
+      <td class="r num ${s.bt.avgR >= 0 ? 'up' : 'down'}">${s.bt.trades ? (s.bt.avgR >= 0 ? '+' : '') + s.bt.avgR.toFixed(2) + 'R' : '-'}</td>
+      <td class="r num">${s.bt.trades ? s.bt.profitFactor.toFixed(2) : '-'}</td>
+      <td>${s.btOk ? '<span class="up">✓ passes</span>' : '<span class="muted">✗ not good enough</span>'}</td></tr>`).join('');
+  $('#coinInfo').innerHTML = `<div style="width:100%"><b style="color:var(--text)">Agent view: <span class="verdict v-${a.verdict}">${a.verdict}</span></b> ` +
+    a.reasons.map(r => `<span style="margin-left:10px">${esc(r)}</span>`).join('') + `</div>` +
+    `<div style="width:100%;margin-top:8px"><b style="color:var(--text)">Strategy benchmark on ${coin(a.symbol)}</b> <span class="muted">(backtest on ~40 days of 1h candles, same stop/targets as live)</span>
+     <table class="mini"><thead><tr><th>Strategy</th><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Avg</th><th class="r">PF</th><th>Benchmark</th></tr></thead><tbody>${strat}</tbody></table></div>`;
 }
 
 // ---------- TradingView chart ----------
@@ -438,8 +517,11 @@ document.body.addEventListener('click', async e => {
   if (act) {
     e.stopPropagation();
     if (act.dataset.act === 'chart') selectCoin(act.dataset.sym);
-    if (act.dataset.act === 'close' && confirmClose()) {
-      await fetch(`/api/signals/${encodeURIComponent(act.dataset.id)}/close`, { method: 'POST' });
+    if (['take', 'skip', 'close'].includes(act.dataset.act)) {
+      if (act.dataset.act === 'close' && !confirmClose()) return;
+      const r = await fetch(`/api/signals/${encodeURIComponent(act.dataset.id)}/${act.dataset.act}`, { method: 'POST' }).then(x => x.json()).catch(() => ({}));
+      if (r && r.ok === false) toast({ title: 'Could not update', body: r.error || '' });
+      else toast({ title: act.dataset.act === 'take' ? 'Marked as taken - set your stop-loss now' : act.dataset.act === 'skip' ? 'Skipped - the agent will still track it' : 'Marked closed' });
     }
     if (act.dataset.act === 'copy') {
       const s = S.signals.find(x => x.id === act.dataset.id); if (!s) return;
@@ -458,7 +540,7 @@ function confirmClose() {
   // two clicks within 3s instead of a blocking confirm() dialog
   if (Date.now() - closeArmed < 3000) { closeArmed = 0; return true; }
   closeArmed = Date.now();
-  toast({ title: 'Click "Mark closed" again to confirm', body: 'Use this when you closed the trade yourself.' });
+  toast({ title: 'Click "I closed it" again to confirm', body: 'Use this when you closed the trade yourself.' });
   return false;
 }
 $('#btnNotify').onclick = async () => {
