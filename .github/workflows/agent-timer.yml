@@ -1,7 +1,10 @@
 # Wakes the agent every 5 minutes so it scans the market and tracks trades,
 # even when nobody has the portal open. Needed on Vercel (serverless).
-# Optional: set the repo variable AGENT_URL (Settings → Secrets and variables → Actions → Variables)
-# to your exact portal address, e.g. https://cryptoagent-laurent-corporates.vercel.app
+#
+# Setup (README, Option V):
+#   - repo SECRET  VERCEL_BYPASS_SECRET = Vercel → Settings → Deployment Protection →
+#                                         "Protection Bypass for Automation" secret
+#   - repo VARIABLE AGENT_URL (optional) = your portal address if it isn't the default below
 name: Agent timer
 
 on:
@@ -21,26 +24,26 @@ jobs:
       - name: Wake the agent
         env:
           AGENT_URL: ${{ vars.AGENT_URL }}
+          BYPASS: ${{ secrets.VERCEL_BYPASS_SECRET }}
         run: |
-          set -u
-          CANDIDATES="${AGENT_URL:-} https://cryptoagent-laurent-corporates.vercel.app https://cryptoagent.vercel.app"
-          for URL in $CANDIDATES; do
-            URL="${URL%/}"
-            if curl -fsS -m 15 "$URL/health" | grep -q '"ok":true'; then
-              echo "Agent found at $URL"
-              curl -fsS -m 110 -X POST "$URL/api/tick" && echo && exit 0
-              echo "::warning::Agent at $URL did not finish the tick"
-              exit 0
-            fi
-          done
-          echo "::error::Agent not reachable. Set the AGENT_URL repo variable to your Vercel address."
-          echo "--- diagnostics ---"
-          for URL in $CANDIDATES; do
-            for P in /health /api/index /; do
-              echo ">> $URL$P"
-              curl -sS -m 15 -o /tmp/body -D /tmp/head "$URL$P" -w "status=%{http_code}\n" || true
-              grep -iE "^(x-vercel-error|server|location|content-type):" /tmp/head || true
-              head -c 200 /tmp/body; echo
-            done
-          done
+          URL="${AGENT_URL:-https://cryptoagent-laurent-corporates.vercel.app}"
+          URL="${URL%/}"
+          H=()
+          if [ -n "$BYPASS" ]; then H=(-H "x-vercel-protection-bypass: $BYPASS"); fi
+
+          if curl -fsS -m 15 "${H[@]}" "$URL/health" | grep -q '"ok":true'; then
+            echo "Agent found at $URL"
+            curl -fsS -m 110 "${H[@]}" -X POST "$URL/api/tick" || echo "::warning::Tick did not finish (will retry next run)"
+            echo
+            exit 0
+          fi
+
+          echo "::error::Agent not reachable at $URL"
+          if [ -z "$BYPASS" ]; then
+            echo "::error::Missing repo secret VERCEL_BYPASS_SECRET. Vercel Deployment Protection blocks the timer without it (see README)."
+          fi
+          echo "--- what the server answered ---"
+          curl -sS -m 15 "${H[@]}" -o /tmp/body -D /tmp/head "$URL/health" -w "status=%{http_code}\n" || true
+          grep -iE "^(x-vercel-error|location|content-type):" /tmp/head || true
+          head -c 300 /tmp/body; echo
           exit 1

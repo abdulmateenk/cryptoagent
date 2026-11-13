@@ -45,10 +45,14 @@ One-time setup (5 minutes):
    → connect it to this project. (This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` automatically.)
 2. Project → **Settings → Environment Variables** → add `PORTAL_PASSWORD` (and Telegram, risk settings if you like).
 3. **Deployments → Redeploy** the latest deployment.
-4. GitHub → this repo → **Actions** tab → enable workflows if asked → open **Agent timer** → **Run workflow** once.
-   If it can't find your site, add the repo variable `AGENT_URL` = your Vercel address
-   (Settings → Secrets and variables → Actions → Variables).
-5. Open your Vercel address. The top-left should show "Last scan HH:MM · next HH:MM".
+4. **Let the timer through Vercel's login wall** (Deployment Protection is on by default for team projects):
+   Vercel project → **Settings → Deployment Protection → Protection Bypass for Automation** → **Add** → copy the secret.
+   GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**:
+   name `VERCEL_BYPASS_SECRET`, value = the copied secret.
+   (Your portal stays private: only people logged in to your Vercel team can open it.)
+5. GitHub → **Actions** tab → **Agent timer** → **Run workflow** once and check it's green.
+   If your address isn't `https://cryptoagent-laurent-corporates.vercel.app`, add the repo variable `AGENT_URL`.
+6. Open your Vercel address. The top-left should show "Last scan HH:MM · next HH:MM".
 
 Notes: GitHub's timer can run a few minutes late at busy times - that's normal. While the portal is open it
 also wakes the agent every minute. GitHub pauses scheduled timers in repos with no activity for 60 days -
