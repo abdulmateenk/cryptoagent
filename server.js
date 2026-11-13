@@ -1,4 +1,7 @@
 // Crypto Watch Portal - web server
+// Runs two ways:
+//   - always-on server (VPS / Railway / Render / your PC): `npm start` - the agent loops by itself
+//   - Vercel (serverless): exported as a function; a timer calls /api/tick every few minutes
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -10,9 +13,11 @@ const notify = require('./src/notify');
 const app = express();
 app.use(express.json());
 
+const PUBLIC_PATHS = new Set(['/health', '/api/tick']); // timer must reach /api/tick without a password
+
 // Optional password protection (set PORTAL_PASSWORD)
 app.use((req, res, next) => {
-  if (!config.portalPassword || req.path === '/health') return next();
+  if (!config.portalPassword || PUBLIC_PATHS.has(req.path)) return next();
   const hdr = req.headers.authorization || '';
   const [scheme, encoded] = hdr.split(' ');
   if (scheme === 'Basic' && encoded) {
@@ -25,37 +30,43 @@ app.use((req, res, next) => {
   res.status(401).send('Authentication required');
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true }));
-app.get('/api/state', (_req, res) => res.json(store.snapshot()));
+const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => {
+  console.error(e);
+  res.status(500).json({ ok: false, error: e.message });
+});
 
-app.post('/api/scan', async (_req, res) => { engine.scan(); res.json({ ok: true }); });
+app.get('/health', (_req, res) => res.json({ ok: true, storage: store.backend, serverless: store.SERVERLESS }));
+
+app.get('/api/state', wrap(async (_req, res) => {
+  if (store.SERVERLESS) await store.load();
+  res.set('Cache-Control', 'no-store');
+  res.json(store.snapshot());
+}));
+
+// Does whatever is due: a full scan every SCAN_INTERVAL_MIN, otherwise a quick trade check.
+app.all('/api/tick', wrap(async (_req, res) => res.json({ ok: true, ...(await engine.tick()) })));
+
+app.post('/api/scan', wrap(async (_req, res) => {
+  if (store.SERVERLESS) return res.json({ ok: true, ...(await engine.tick({ force: true })) });
+  engine.scan();
+  res.json({ ok: true, action: 'scan' });
+}));
 
 // Your response to a signal: take | skip | close
-app.post('/api/signals/:id/:action', (req, res) => res.json(engine.respond(req.params.id, req.params.action)));
+app.post('/api/signals/:id/:action', wrap(async (req, res) => res.json(await engine.respond(req.params.id, req.params.action))));
 
-app.post('/api/test-alert', async (_req, res) => {
-  store.bus.emit('alert', { type: 'test', title: '🔔 Test alert', body: 'Alerts are working.' });
+app.post('/api/test-alert', wrap(async (_req, res) => {
   await notify.telegram('🔔 Test alert from your Crypto Watch Portal - alerts are working.');
-  res.json({ ok: true });
-});
+  res.json({ ok: true, telegram: !!(config.telegramToken && config.telegramChatId) });
+}));
 
-// Live updates via Server-Sent Events
-app.get('/api/events', (req, res) => {
-  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-  res.flushHeaders();
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  const onUpdate = () => send('state', store.snapshot());
-  const onAlert = a => send('alert', a);
-  store.bus.on('update', onUpdate);
-  store.bus.on('alert', onAlert);
-  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
-  onUpdate();
-  req.on('close', () => { clearInterval(ping); store.bus.off('update', onUpdate); store.bus.off('alert', onAlert); });
-});
+app.use(express.static(path.join(__dirname, 'web'), { index: 'index.html' }));
 
-app.use(express.static(path.join(__dirname, 'public')));
+if (require.main === module) {
+  app.listen(config.port, () => {
+    console.log(`Crypto Watch Portal running on http://localhost:${config.port}${config.demo ? '  (DEMO data)' : ''} · storage: ${store.backend}`);
+    engine.start();
+  });
+}
 
-app.listen(config.port, () => {
-  console.log(`Crypto Watch Portal running on http://localhost:${config.port}${config.demo ? '  (DEMO data)' : ''}`);
-  engine.start();
-});
+module.exports = app;

@@ -13,7 +13,6 @@ const store = require('./store');
 const notify = require('./notify');
 
 const { state, bus } = store;
-let discoveredAt = 0;
 
 async function pool(items, size, fn) {
   const out = [];
@@ -148,12 +147,12 @@ async function scan() {
   state.meta.scanning = true;
   bus.emit('update');
   try {
-    if ((config.scanCheap || config.scanHot) && Date.now() - discoveredAt > 15 * 6e4) {
+    if ((config.scanCheap || config.scanHot) && Date.now() - (state.meta.discoveredAt || 0) > 15 * 6e4) {
       try {
         const { cheap, hot } = await md.discoverCoins();
         state.meta.cheapCoins = cheap;
         state.meta.hotCoins = hot;
-        discoveredAt = Date.now();
+        state.meta.discoveredAt = Date.now();
       } catch (e) { logError('Coin discovery failed: ' + e.message); }
     }
     const tracked = state.signals.filter(s => s.status !== 'closed').map(s => s.symbol);
@@ -195,12 +194,13 @@ async function scan() {
       for (const r of results) if (r && !r.error) for (const sig of state.signals.filter(s => s.symbol === r.sym && s.status !== 'closed')) trackSignal(sig, r.k15);
     }
     state.meta.lastScan = Date.now();
-    store.save();
+    state.meta.lastTrack = Date.now();
   } catch (e) {
     logError('Scan failed: ' + e.message);
   } finally {
     state.meta.scanning = false;
     state.meta.nextScan = Date.now() + config.scanIntervalMin * 6e4;
+    await store.save();
     bus.emit('update');
   }
 }
@@ -208,6 +208,7 @@ async function scan() {
 // Between full scans, re-check open trades every minute so targets/stops are caught fast.
 async function quickTrack() {
   if (state.meta.scanning) return;
+  state.meta.lastTrack = Date.now();
   const open = state.signals.filter(s => s.status !== 'closed');
   if (!open.length) return;
   for (const sym of [...new Set(open.map(s => s.symbol))]) {
@@ -216,19 +217,39 @@ async function quickTrack() {
       for (const sig of open.filter(s => s.symbol === sym)) trackSignal(sig, k15);
     } catch (_) { /* next scan will retry */ }
   }
-  store.save();
+  await store.save();
   bus.emit('update');
 }
 
-function start() {
-  store.load();
+// Always-on servers: run the loops ourselves.
+async function start() {
+  await store.load();
   scan();
   setInterval(scan, config.scanIntervalMin * 6e4);
   setInterval(quickTrack, 60e3);
 }
 
+// Serverless (Vercel): a timer / the open portal calls /api/tick; we do whatever is due.
+async function tick({ force = false } = {}) {
+  await store.load();
+  const now = Date.now();
+  const due = force || !state.meta.lastScan || now - state.meta.lastScan > config.scanIntervalMin * 6e4 - 30e3;
+  if (due) {
+    if (!(await store.lock('scan', 110))) return { action: 'busy' };
+    try { await scan(); } finally { await store.unlock('scan'); }
+    return { action: 'scan', lastScan: state.meta.lastScan };
+  }
+  if (now - (state.meta.lastTrack || 0) > 55e3 && state.signals.some(s => s.status !== 'closed')) {
+    if (!(await store.lock('track', 50))) return { action: 'busy' };
+    try { await quickTrack(); } finally { await store.unlock('track'); }
+    return { action: 'track' };
+  }
+  return { action: 'none', nextScan: state.meta.nextScan };
+}
+
 // ---------- Your responses ----------
-function respond(id, action) {
+async function respond(id, action) {
+  await store.load();
   const sig = state.signals.find(s => s.id === id);
   if (!sig) return { ok: false, error: 'not found' };
   if (action === 'take') {
@@ -245,9 +266,9 @@ function respond(id, action) {
     const R = sig.status === 'closed' ? sig.resultR : (sig.liveR || 0);
     sig.user = { closedAt: Date.now(), resultR: R, resultUsd: R * sig.setup.riskUsd, price: sig.lastPrice };
   } else return { ok: false, error: 'unknown action' };
-  store.save();
+  await store.save();
   bus.emit('update');
   return { ok: true };
 }
 
-module.exports = { start, scan, respond };
+module.exports = { start, scan, tick, respond };

@@ -1,0 +1,12 @@
+{
+  "framework": null,
+  "buildCommand": "",
+  "outputDirectory": "static",
+  "regions": ["sin1"],
+  "functions": {
+    "api/index.js": { "maxDuration": 60, "includeFiles": "web/**" }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index" }
+  ]
+}

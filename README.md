@@ -34,6 +34,26 @@ For live Binance prices: `npm start`
 
 ## 2. Deploy online (pick one)
 
+### Option V - Vercel (free) - already set up for this repo
+Vercel is "serverless": it only runs code during a request, then freezes it. So this repo includes:
+- `vercel.json` - runs the agent in **Singapore** (Binance blocks US servers) and routes everything to it
+- a **GitHub Actions timer** (`.github/workflows/agent-timer.yml`) that wakes the agent every 5 minutes
+- support for **Upstash Redis** storage so your trades survive restarts
+
+One-time setup (5 minutes):
+1. Vercel dashboard → your **cryptoagent** project → **Storage** → **Create / Connect** → **Upstash for Redis** (free plan)
+   → connect it to this project. (This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` automatically.)
+2. Project → **Settings → Environment Variables** → add `PORTAL_PASSWORD` (and Telegram, risk settings if you like).
+3. **Deployments → Redeploy** the latest deployment.
+4. GitHub → this repo → **Actions** tab → enable workflows if asked → open **Agent timer** → **Run workflow** once.
+   If it can't find your site, add the repo variable `AGENT_URL` = your Vercel address
+   (Settings → Secrets and variables → Actions → Variables).
+5. Open your Vercel address. The top-left should show "Last scan HH:MM · next HH:MM".
+
+Notes: GitHub's timer can run a few minutes late at busy times - that's normal. While the portal is open it
+also wakes the agent every minute. GitHub pauses scheduled timers in repos with no activity for 60 days -
+just re-enable it in the Actions tab if that happens.
+
 The agent must run all the time, so use hosting that **doesn't sleep**.
 
 ### Option A - Railway (easiest, about $5/month)

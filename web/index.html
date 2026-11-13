@@ -162,6 +162,7 @@
   </aside>
 
   <main>
+    <div class="banner" id="storageBanner" hidden>No storage connected - trades can be lost when the server restarts. On Vercel: Storage → Upstash for Redis (free) → Connect to this project → Redeploy.</div>
     <div class="banner" id="demoBanner" hidden>DEMO MODE - prices are simulated and trades are samples. Deploy without <b>DEMO=true</b> to use live Binance data.</div>
 
     <div class="stats">
@@ -385,10 +386,13 @@ function renderMain() {
   $('#sRisk2').textContent = `risk $${S.settings.riskPerTradeUsd}/trade · max ${S.settings.maxLeverage}x`;
 
   const m = S.meta;
-  $('#dot').className = 'dot' + (m.scanning ? ' scan' : '');
-  $('#scanInfo').textContent = m.scanning ? 'Scanning market…' :
+  const stale = m.lastScan && (m.now || Date.now()) - m.lastScan > 3 * S.settings.scanIntervalMin * 6e4;
+  $('#dot').className = 'dot' + (busy || m.scanning ? ' scan' : stale ? ' off' : '');
+  $('#storageBanner').hidden = S.settings.storage !== 'memory';
+  if (stale) { $('#scanInfo').textContent = `⚠ No scan since ${dt(m.lastScan)} - the 5-minute timer isn't running (see README)`; } else
+  $('#scanInfo').textContent = busy || m.scanning ? 'Scanning market… (first scan takes ~30s)' :
     (m.lastScan ? `Last scan ${hm(m.lastScan)} · next ${hm(m.nextScan)} · ${S.market.length} coins`
-      : (Date.now() - (m.startedAt || Date.now()) > 120000 ? 'Agent not scanning - needs an always-on server (see README)' : 'Starting first scan…')) +
+      : 'Starting first scan…') +
     (m.errors.length ? ` · ⚠ ${m.errors[0].msg}` : '');
 
   // market table
@@ -523,6 +527,7 @@ document.body.addEventListener('click', async e => {
       const r = await fetch(`/api/signals/${encodeURIComponent(act.dataset.id)}/${act.dataset.act}`, { method: 'POST' }).then(x => x.json()).catch(() => ({}));
       if (r && r.ok === false) toast({ title: 'Could not update', body: r.error || '' });
       else toast({ title: act.dataset.act === 'take' ? 'Marked as taken - set your stop-loss now' : act.dataset.act === 'skip' ? 'Skipped - the agent will still track it' : 'Marked closed' });
+      await refresh();
     }
     if (act.dataset.act === 'copy') {
       const s = S.signals.find(x => x.id === act.dataset.id); if (!s) return;
@@ -548,16 +553,44 @@ $('#btnNotify').onclick = async () => {
   if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
   updateNotifyBtn();
 };
-$('#btnScan').onclick = () => fetch('/api/scan', { method: 'POST' });
-$('#btnTest').onclick = () => fetch('/api/test-alert', { method: 'POST' });
+$('#btnScan').onclick = () => tickNow(true);
+$('#btnTest').onclick = async () => {
+  onAlert({ title: '🔔 Test alert', body: 'Portal alerts are working.' });
+  const r = await fetch('/api/test-alert', { method: 'POST' }).then(x => x.json()).catch(() => ({}));
+  if (r.telegram === false) toast({ title: 'Telegram not set up', body: 'Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to get alerts on your phone.' });
+};
 
 function render() { if (!S) return; renderSidebar(); renderMain(); }
 
+// Polling (works on always-on servers AND serverless hosts like Vercel)
+let lastAlertAt = Number(safeGet('lastAlertAt') || 0);
+let busy = false;
+async function refresh() {
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const snap = await r.json();
+    const newest = snap.updates.length ? snap.updates[0].at : 0;
+    if (lastAlertAt) snap.updates.filter(u => u.at > lastAlertAt).slice(0, 5).reverse().forEach(onAlert);
+    if (newest > lastAlertAt || !lastAlertAt) { lastAlertAt = Math.max(newest, lastAlertAt || 1); safeSet('lastAlertAt', lastAlertAt); }
+    S = snap;
+    render();
+  } catch (e) {
+    $('#dot').className = 'dot off';
+    $('#scanInfo').textContent = 'Cannot reach the agent (' + e.message + ') - retrying…';
+  }
+}
+async function tickNow(force) {
+  if (busy) return;
+  busy = true; if (S) renderMain();
+  try { await fetch(force ? '/api/scan' : '/api/tick', { method: 'POST' }); } catch (_) {}
+  busy = false;
+  await refresh();
+}
 function connect() {
-  const es = new EventSource('/api/events');
-  es.addEventListener('state', e => { S = JSON.parse(e.data); render(); });
-  es.addEventListener('alert', e => onAlert(JSON.parse(e.data)));
-  es.onerror = () => { $('#dot').className = 'dot off'; $('#scanInfo').textContent = 'Connection lost - reconnecting…'; };
+  refresh().then(() => tickNow(false));
+  setInterval(refresh, 15000);
+  setInterval(() => tickNow(false), 60000); // keeps the agent moving while the portal is open
 }
 
 setInterval(() => { if (S && tab === 'trades') renderSidebar(); }, 30000); // refresh countdowns

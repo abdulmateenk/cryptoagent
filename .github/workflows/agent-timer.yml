@@ -1,0 +1,37 @@
+# Wakes the agent every 5 minutes so it scans the market and tracks trades,
+# even when nobody has the portal open. Needed on Vercel (serverless).
+# Optional: set the repo variable AGENT_URL (Settings → Secrets and variables → Actions → Variables)
+# to your exact portal address, e.g. https://cryptoagent-laurent-corporates.vercel.app
+name: Agent timer
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: agent-timer
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Wake the agent
+        env:
+          AGENT_URL: ${{ vars.AGENT_URL }}
+        run: |
+          set -u
+          CANDIDATES="${AGENT_URL:-} https://cryptoagent-laurent-corporates.vercel.app https://cryptoagent.vercel.app"
+          for URL in $CANDIDATES; do
+            URL="${URL%/}"
+            if curl -fsS -m 15 "$URL/health" | grep -q '"ok":true'; then
+              echo "Agent found at $URL"
+              curl -fsS -m 110 -X POST "$URL/api/tick" && echo && exit 0
+              echo "::warning::Agent at $URL did not finish the tick"
+              exit 0
+            fi
+          done
+          echo "::error::Agent not reachable. Set the AGENT_URL repo variable to your Vercel address."
+          exit 1
