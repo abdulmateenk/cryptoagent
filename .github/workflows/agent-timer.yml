@@ -34,4 +34,13 @@ jobs:
             fi
           done
           echo "::error::Agent not reachable. Set the AGENT_URL repo variable to your Vercel address."
+          echo "--- diagnostics ---"
+          for URL in $CANDIDATES; do
+            for P in /health /api/index /; do
+              echo ">> $URL$P"
+              curl -sS -m 15 -o /tmp/body -D /tmp/head "$URL$P" -w "status=%{http_code}\n" || true
+              grep -iE "^(x-vercel-error|server|location|content-type):" /tmp/head || true
+              head -c 200 /tmp/body; echo
+            done
+          done
           exit 1
