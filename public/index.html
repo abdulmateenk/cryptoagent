@@ -387,7 +387,8 @@ function renderMain() {
   const m = S.meta;
   $('#dot').className = 'dot' + (m.scanning ? ' scan' : '');
   $('#scanInfo').textContent = m.scanning ? 'Scanning market…' :
-    (m.lastScan ? `Last scan ${hm(m.lastScan)} · next ${hm(m.nextScan)} · ${S.market.length} coins` : 'Starting…') +
+    (m.lastScan ? `Last scan ${hm(m.lastScan)} · next ${hm(m.nextScan)} · ${S.market.length} coins`
+      : (Date.now() - (m.startedAt || Date.now()) > 120000 ? 'Agent not scanning - needs an always-on server (see README)' : 'Starting first scan…')) +
     (m.errors.length ? ` · ⚠ ${m.errors[0].msg}` : '');
 
   // market table

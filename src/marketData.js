@@ -11,7 +11,7 @@ async function getJson(path) {
   for (let n = 0; n < BASES.length; n++) {
     const base = BASES[(baseIdx + n) % BASES.length];
     try {
-      const res = await fetch(base + path);
+      const res = await fetch(base + path, { signal: AbortSignal.timeout(15000) }); // never hang a scan
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         throw new Error(`Binance ${res.status}: ${body.slice(0, 100)}`);
