@@ -1,0 +1,17 @@
+{
+  "name": "crypto-watch-portal",
+  "version": "1.0.0",
+  "description": "Self-hosted crypto market-watch agent with a browser portal: short-term long/short setups, leverage suggestions, alerts.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "DEMO=true node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
